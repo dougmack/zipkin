@@ -26,19 +26,15 @@ import com.google.common.net.InetAddresses;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.Reader;
-import java.net.Inet6Address;
 import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import zipkin.Annotation;
-import zipkin.BinaryAnnotation;
-import zipkin.Endpoint;
+import zipkin2.Annotation;
+import zipkin2.Endpoint;
 
 import static zipkin.internal.Util.UTF_8;
-import static zipkin.internal.Util.toLowerHex;
 
 final class Schema {
   private static final Logger LOG = LoggerFactory.getLogger(Schema.class);
@@ -48,7 +44,7 @@ final class Schema {
   static final String TABLE_SERVICE_SPANS = "span_name_by_service";
   static final String TABLE_DEPENDENCIES = "dependencies";
 
-  static final String DEFAULT_KEYSPACE = "zipkin3";
+  static final String DEFAULT_KEYSPACE = "zipkin2_cassandra3";
   private static final String SCHEMA_RESOURCE = "/cassandra3-schema.cql";
 
   private Schema() {
@@ -58,8 +54,8 @@ final class Schema {
     KeyspaceMetadata keyspaceMetadata = getKeyspaceMetadata(session);
 
     Map<String, String> replication = keyspaceMetadata.getReplication();
-    if ("SimpleStrategy".equals(replication.get("class")) && "1".equals(
-        replication.get("replication_factor"))) {
+    if ("SimpleStrategy".equals(replication.get("class"))
+            && "1".equals(replication.get("replication_factor"))) {
       LOG.warn("running with RF=1, this is not suitable for production. Optimal is 3+");
     }
     String compactionClass =
@@ -113,71 +109,13 @@ final class Schema {
     }
   }
 
-  @UDT(keyspace = DEFAULT_KEYSPACE + "_udts", name = "trace_id")
-  static final class TraceIdUDT {
-
-    private long high;
-    private long low;
-
-    TraceIdUDT() {
-      this.high = 0L;
-      this.low = 0L;
-    }
-
-    TraceIdUDT(long high, long low) {
-        this.high = high;
-        this.low = low;
-    }
-
-    Long getHigh() {
-      return high;
-    }
-
-    long getLow() {
-      return low;
-    }
-
-    void setHigh(Long high) {
-      this.high = high;
-    }
-
-    void setLow(long low) {
-      this.low = low;
-    }
-
-    @Override
-    public boolean equals(Object o) {
-      if (o == this) return true;
-      if (o instanceof TraceIdUDT) {
-        TraceIdUDT that = (TraceIdUDT) o;
-        return (this.high == that.high) && (this.low == that.low);
-      }
-      return false;
-    }
-
-    @Override
-    public int hashCode() {
-      int h = 1;
-      h *= 1000003;
-      h ^= (int) (h ^ ((high >>> 32) ^ high));
-      h *= 1000003;
-      h ^= (int) (h ^ ((low >>> 32) ^ low));
-      return h;
-    }
-
-    @Override
-    public String toString() {
-      return toLowerHex(high, low);
-    }
-  }
-
   @UDT(keyspace = DEFAULT_KEYSPACE + "_udts", name = "endpoint")
   static final class EndpointUDT {
 
     private String service_name;
     private InetAddress ipv4;
     private InetAddress ipv6;
-    private Short port;
+    private Integer port;
 
     EndpointUDT() {
       this.service_name = null;
@@ -187,15 +125,16 @@ final class Schema {
     }
 
     EndpointUDT(Endpoint endpoint) {
-      this.service_name = endpoint.serviceName;
-      this.ipv4 = endpoint.ipv4 == 0 ? null : InetAddresses.fromInteger(endpoint.ipv4);
-      if (endpoint.ipv6 != null && endpoint.ipv6.length == 16) {
-        try {
-          this.ipv6 = Inet6Address.getByAddress(endpoint.ipv6);
-        } catch (UnknownHostException ex) { // We already checked for illegal length, so unexpected!
-        }
+      this.service_name = endpoint.serviceName();
+      this.ipv4 = endpoint.ipv4() == null ? null : InetAddresses.forString(endpoint.ipv4());
+      if (endpoint.ipv6() != null && endpoint.ipv6().length() == 16) {
+          throw new UnsupportedOperationException("XXX not yet implemented");
+//        try {
+//          this.ipv6 = Inet6Address.getByAddress(endpoint.ipv6());
+//        } catch (UnknownHostException ex) { // We already checked for illegal length, so unexpected!
+//        }
       }
-      this.port = endpoint.port;
+      this.port = endpoint.port();
     }
 
     public String getService_name() {
@@ -210,7 +149,7 @@ final class Schema {
       return ipv6;
     }
 
-    public Short getPort() {
+    public Integer getPort() {
       return port;
     }
 
@@ -226,12 +165,12 @@ final class Schema {
       this.ipv6 = ipv6;
     }
 
-    public void setPort(short port) {
+    public void setPort(int port) {
       this.port = port;
     }
 
-    private Endpoint toEndpoint() {
-      Endpoint.Builder builder = Endpoint.builder().serviceName(service_name).port(port);
+    Endpoint toEndpoint() {
+      Endpoint.Builder builder = Endpoint.newBuilder().serviceName(service_name).port(port);
       builder.parseIp(ipv4);
       builder.parseIp(ipv6);
       return builder.build();
@@ -243,18 +182,15 @@ final class Schema {
 
     private long ts;
     private String v;
-    private EndpointUDT ep;
 
     AnnotationUDT() {
       this.ts = 0;
       this.v = null;
-      this.ep = null;
     }
 
     AnnotationUDT(Annotation annotation) {
-      this.ts = annotation.timestamp;
-      this.v = annotation.value;
-      this.ep = annotation.endpoint != null ? new EndpointUDT(annotation.endpoint) : null;
+      this.ts = annotation.timestamp();
+      this.v = annotation.value();
     }
 
     public long getTs() {
@@ -265,10 +201,6 @@ final class Schema {
       return v;
     }
 
-    public EndpointUDT getEp() {
-      return ep;
-    }
-
     public void setTs(long ts) {
       this.ts = ts;
     }
@@ -277,82 +209,8 @@ final class Schema {
       this.v = v;
     }
 
-    public void setEp(EndpointUDT ep) {
-      this.ep = ep;
-    }
-
     Annotation toAnnotation() {
-      Annotation.Builder builder = Annotation.builder().timestamp(ts).value(v);
-      if (null != ep) {
-        builder = builder.endpoint(ep.toEndpoint());
-      }
-      return builder.build();
-    }
-  }
-
-  @UDT(keyspace = DEFAULT_KEYSPACE + "_udts", name = "binary_annotation")
-  static final class BinaryAnnotationUDT {
-
-    private String k;
-    private ByteBuffer v;
-    private String t;
-    private EndpointUDT ep;
-
-    BinaryAnnotationUDT() {
-      this.k = null;
-      this.v = null;
-      this.t = null;
-      this.ep = null;
-    }
-
-    BinaryAnnotationUDT(BinaryAnnotation annotation) {
-      this.k = annotation.key;
-      this.v = annotation.value != null ? ByteBuffer.wrap(annotation.value) : null;
-      this.t = annotation.type.name();
-      this.ep = annotation.endpoint != null ? new EndpointUDT(annotation.endpoint) : null;
-    }
-
-    public String getK() {
-      return k;
-    }
-
-    public ByteBuffer getV() {
-      return v.duplicate();
-    }
-
-    public String getT() {
-      return t;
-    }
-
-    public EndpointUDT getEp() {
-      return ep;
-    }
-
-    public void setK(String k) {
-      this.k = k;
-    }
-
-    public void setV(ByteBuffer v) {
-      byte[] bytes = new byte[v.remaining()];
-      v.duplicate().get(bytes);
-      this.v = ByteBuffer.wrap(bytes);
-    }
-
-    public void setT(String t) {
-      this.t = t;
-    }
-
-    public void setEp(EndpointUDT ep) {
-      this.ep = ep;
-    }
-
-    BinaryAnnotation toBinaryAnnotation() {
-      BinaryAnnotation.Builder builder = BinaryAnnotation.builder()
-          .key(k)
-          .value(v.array())
-          .type(BinaryAnnotation.Type.valueOf(t));
-      if (ep != null) builder.endpoint(ep.toEndpoint());
-      return builder.build();
+      return Annotation.create(ts, v);
     }
   }
 
